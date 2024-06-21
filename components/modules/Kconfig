@@ -113,7 +113,7 @@ menu "ESP-WHO Configuration"
         config CAMERA_PIN_SIOD
             depends on CAMERA_MODULE_CUSTOM
             int "SIOD pin"
-            range 0 33
+            range 0 40
             default 26
             help
                 Select Camera SIOD pin.
@@ -121,7 +121,7 @@ menu "ESP-WHO Configuration"
         config CAMERA_PIN_SIOC
             depends on CAMERA_MODULE_CUSTOM
             int "SIOC pin"
-            range 0 33
+            range 0 40
             default 27
             help
                 Select Camera SIOC pin.
@@ -137,7 +137,7 @@ menu "ESP-WHO Configuration"
         config CAMERA_PIN_HREF
             depends on CAMERA_MODULE_CUSTOM
             int "HREF pin"
-            range 0 39
+            range 0 47
             default 23
             help
                 Select Camera HREF pin.
@@ -209,7 +209,7 @@ menu "ESP-WHO Configuration"
         config CAMERA_PIN_Y9
             depends on CAMERA_MODULE_CUSTOM
             int "Y9 pin"
-            range 0 39
+            range 0 48
             default 35
             help
                 Select Camera Y9 pin.
