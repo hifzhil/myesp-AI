@@ -1,0 +1,72 @@
+#include "servo_driver.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "esp_log.h"
+
+static const char *TAG = "SERVO_CONTROL";
+
+QueueHandle_t xQueueServoAngle;
+QueueHandle_t xQueueEvent;
+bool gEvent = false;
+
+static void task_servo_handler(void *arg)
+{
+    int angle;
+    while (true)
+    {
+        if (gEvent)
+        {
+            if (xQueueReceive(xQueueServoAngle, &angle, portMAX_DELAY))
+            {
+                ESP_LOGI(TAG, "Setting servo angle to %d", angle);
+                set_servo_angle(0, angle);
+            }
+        }
+    }
+}
+
+static void task_event_handler(void *arg)
+{
+    while (true)
+    {
+        xQueueReceive(xQueueEvent, &gEvent, portMAX_DELAY);
+    }
+}
+
+extern "C" void app_main()
+{
+    // Initialize the servo driver
+    servo_driver_init();
+    ESP_LOGI(TAG, "Servo driver initialized successfully");
+
+    // Create queues
+    xQueueServoAngle = xQueueCreate(10, sizeof(int));
+    xQueueEvent = xQueueCreate(10, sizeof(bool));
+
+    // Create tasks
+    xTaskCreatePinnedToCore(task_servo_handler, "servo_handler", 2048, NULL, 5, NULL, 0);
+    if (xQueueEvent)
+    {
+        xTaskCreatePinnedToCore(task_event_handler, "event_handler", 2048, NULL, 5, NULL, 1);
+    }
+
+    // Example: Sending events and angles to the queues
+    int angle = 0;
+    int step = 2;
+
+    while (true)
+    {
+        gEvent = true;
+        xQueueSend(xQueueEvent, &gEvent, portMAX_DELAY);
+        xQueueSend(xQueueServoAngle, &angle, portMAX_DELAY);
+
+        vTaskDelay(pdMS_TO_TICKS(500)); // Wait 500 milliseconds
+
+        angle += step;
+        if (angle > 60 || angle < -60)
+        {
+            step = -step;
+        }
+    }
+}

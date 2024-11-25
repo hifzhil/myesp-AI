@@ -1,0 +1,341 @@
+/*
+ * SPDX-FileCopyrightText: 2022-2023 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+#include "servo_driver.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "driver/mcpwm_prelude.h"
+#include "esp_log.h"
+
+static const char *TAG = "servo_control";
+
+static QueueHandle_t xQueueAngleX = NULL;
+static QueueHandle_t xQueueAngleY = NULL;
+
+// Function to convert angle to compare value
+uint32_t example_angle_to_compare(int angle)
+{
+    return (angle - SERVO_MIN_DEGREE) * (SERVO_MAX_PULSEWIDTH_US - SERVO_MIN_PULSEWIDTH_US) / (SERVO_MAX_DEGREE - SERVO_MIN_DEGREE) + SERVO_MIN_PULSEWIDTH_US;
+}
+
+// Servo task to control Servo 1 based on angle commands
+void servo1_task(void *pvParameter)
+{
+    int angle_x = 0; // Initialize as int
+    int gpio_num = *(int *)pvParameter;
+    ESP_LOGI(TAG, "Create timer and operator for GPIO %d", gpio_num);
+
+    mcpwm_timer_handle_t timer = NULL;
+    mcpwm_timer_config_t timer_config = {
+        .group_id = 0,
+        .clk_src = MCPWM_TIMER_CLK_SRC_DEFAULT,
+        .resolution_hz = SERVO_TIMEBASE_RESOLUTION_HZ,
+        .period_ticks = SERVO_TIMEBASE_PERIOD,
+        .count_mode = MCPWM_TIMER_COUNT_MODE_UP,
+    };
+    ESP_ERROR_CHECK(mcpwm_new_timer(&timer_config, &timer));
+
+    mcpwm_oper_handle_t oper = NULL;
+    mcpwm_operator_config_t operator_config = {
+        .group_id = 0, // operator must be in the same group to the timer
+    };
+    ESP_ERROR_CHECK(mcpwm_new_operator(&operator_config, &oper));
+
+    ESP_LOGI(TAG, "Connect timer and operator for GPIO %d", gpio_num);
+    ESP_ERROR_CHECK(mcpwm_operator_connect_timer(oper, timer));
+
+    ESP_LOGI(TAG, "Create comparator and generator from the operator for GPIO %d", gpio_num);
+    mcpwm_cmpr_handle_t comparator = NULL;
+    mcpwm_comparator_config_t comparator_config = {
+        .flags.update_cmp_on_tez = true,
+    };
+    ESP_ERROR_CHECK(mcpwm_new_comparator(oper, &comparator_config, &comparator));
+
+    mcpwm_gen_handle_t generator = NULL;
+    mcpwm_generator_config_t generator_config = {
+        .gen_gpio_num = gpio_num,
+    };
+    ESP_ERROR_CHECK(mcpwm_new_generator(oper, &generator_config, &generator));
+
+    // Set the initial compare value, so that the servo will spin to the center position
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(comparator, example_angle_to_compare(0)));
+
+    ESP_LOGI(TAG, "Set generator action on timer and compare event for GPIO %d", gpio_num);
+    // Go high on counter empty
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(generator,
+                                                              MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, MCPWM_TIMER_EVENT_EMPTY, MCPWM_GEN_ACTION_HIGH)));
+    // Go low on compare threshold
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_compare_event(generator,
+                                                                MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, comparator, MCPWM_GEN_ACTION_LOW)));
+
+    ESP_LOGI(TAG, "Enable and start timer for GPIO %d", gpio_num);
+    ESP_ERROR_CHECK(mcpwm_timer_enable(timer));
+    ESP_ERROR_CHECK(mcpwm_timer_start_stop(timer, MCPWM_TIMER_START_NO_STOP));
+
+    while (1) {
+        if (xQueueReceive(xQueueAngleX, &angle_x, portMAX_DELAY)) {
+            ESP_LOGI(TAG, "Angle of rotation for GPIO %d: %d", gpio_num, angle_x);
+            ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(comparator, example_angle_to_compare(angle_x)));
+        }
+        // Add delay to simulate servo response time
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
+// Servo task to control Servo 2 based on angle commands
+void servo2_task(void *pvParameter)
+{
+    int angle_y = 0; // Initialize as int
+    int gpio_num = *(int *)pvParameter;
+    ESP_LOGI(TAG, "Create timer and operator for GPIO %d", gpio_num);
+
+    mcpwm_timer_handle_t timer = NULL;
+    mcpwm_timer_config_t timer_config = {
+        .group_id = 0,
+        .clk_src = MCPWM_TIMER_CLK_SRC_DEFAULT,
+        .resolution_hz = SERVO_TIMEBASE_RESOLUTION_HZ,
+        .period_ticks = SERVO_TIMEBASE_PERIOD,
+        .count_mode = MCPWM_TIMER_COUNT_MODE_UP,
+    };
+    ESP_ERROR_CHECK(mcpwm_new_timer(&timer_config, &timer));
+
+    mcpwm_oper_handle_t oper = NULL;
+    mcpwm_operator_config_t operator_config = {
+        .group_id = 0, // operator must be in the same group to the timer
+    };
+    ESP_ERROR_CHECK(mcpwm_new_operator(&operator_config, &oper));
+
+    ESP_LOGI(TAG, "Connect timer and operator for GPIO %d", gpio_num);
+    ESP_ERROR_CHECK(mcpwm_operator_connect_timer(oper, timer));
+
+    ESP_LOGI(TAG, "Create comparator and generator from the operator for GPIO %d", gpio_num);
+    mcpwm_cmpr_handle_t comparator = NULL;
+    mcpwm_comparator_config_t comparator_config = {
+        .flags.update_cmp_on_tez = true,
+    };
+    ESP_ERROR_CHECK(mcpwm_new_comparator(oper, &comparator_config, &comparator));
+
+    mcpwm_gen_handle_t generator = NULL;
+    mcpwm_generator_config_t generator_config = {
+        .gen_gpio_num = gpio_num,
+    };
+    ESP_ERROR_CHECK(mcpwm_new_generator(oper, &generator_config, &generator));
+
+    // Set the initial compare value, so that the servo will spin to the center position
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(comparator, example_angle_to_compare(0)));
+
+    ESP_LOGI(TAG, "Set generator action on timer and compare event for GPIO %d", gpio_num);
+    // Go high on counter empty
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(generator,
+                                                              MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, MCPWM_TIMER_EVENT_EMPTY, MCPWM_GEN_ACTION_HIGH)));
+    // Go low on compare threshold
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_compare_event(generator,
+                                                                MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, comparator, MCPWM_GEN_ACTION_LOW)));
+
+    ESP_LOGI(TAG, "Enable and start timer for GPIO %d", gpio_num);
+    ESP_ERROR_CHECK(mcpwm_timer_enable(timer));
+    ESP_ERROR_CHECK(mcpwm_timer_start_stop(timer, MCPWM_TIMER_START_NO_STOP));
+
+    while (1) {
+        if (xQueueReceive(xQueueAngleY, &angle_y, portMAX_DELAY)) {
+            ESP_LOGI(TAG, "Angle of rotation for GPIO %d: %d", gpio_num, angle_y);
+            ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(comparator, example_angle_to_compare(angle_y)));
+        }
+        // Add delay to simulate servo response time
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
+// Function to initialize the servos
+void register_servo_driver(const QueueHandle_t angle_x,
+                           const QueueHandle_t angle_y)
+{
+    xQueueAngleX = angle_x;
+    xQueueAngleY = angle_y;
+    // Define GPIO numbers for each servo
+    static int servo1_gpio = SERVO1_PULSE_GPIO;
+    static int servo2_gpio = SERVO2_PULSE_GPIO;
+
+    // Create tasks for each servo
+    xTaskCreate(servo1_task, "servo1_task", 4096, &servo1_gpio, 5, NULL);
+    xTaskCreate(servo2_task, "servo2_task", 4096, &servo2_gpio, 5, NULL);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#include "mouth_openness.hpp"
+#include "camera_node.hpp"
+#include "servo_driver.h"
+#include "mo_utils.hpp"
+#include "app_wifi.h"
+#include "app_httpd.hpp"
+#include "app_mdns.h"
+#include "driver/gpio.h"
+// #include <unistd.h>
+
+// static QueueHandle_t xQueueFaceFrame = NULL;
+static QueueHandle_t xQueueAIFrame = NULL;
+static QueueHandle_t xQueueHttpFrame = NULL;
+static QueueHandle_t xQueueResizedFrame = NULL;
+static QueueHandle_t xQueueResult = NULL;
+static QueueHandle_t xQueueAngleX = NULL;
+static QueueHandle_t xQueueAngleY = NULL;
+
+
+//visual servoing flag
+#define CAMERA_WIDTH 240
+#define CAMERA_HEIGHT 240
+#define DESIRED_X 120
+#define DESIRED_Y 120
+#define Kp 0.1  // Proportional gain
+
+
+
+#define GPIO_OUTPUT_PIN_LED   GPIO_NUM_3
+#define GPIO_OUTPUT_PIN_SEL  (1ULL<<GPIO_OUTPUT_PIN_LED)
+
+
+static const char *TAG = "MAIN";
+void init_gpio(void)
+{
+    // Configure the GPIO pins
+    gpio_config_t io_conf;
+    
+    // Disable interrupt
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    
+    // Set as output mode
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    
+    // Bit mask of the pins to set
+    io_conf.pin_bit_mask = GPIO_OUTPUT_PIN_SEL;
+    
+    // Disable pull-down mode
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    
+    // Disable pull-up mode
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    
+    // Configure GPIO with the given settings
+    esp_err_t ret = gpio_config(&io_conf);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "GPIO configured successfully");
+    } else {
+        ESP_LOGE(TAG, "GPIO configuration failed");
+    }
+}
+
+void control_leds(bool detected)
+{
+    if (detected) {
+        // Set GPIO3 to high (LED ON)
+        gpio_set_level(GPIO_OUTPUT_PIN_LED, 0);
+        ESP_LOGI(TAG, "LED is ON");
+    } else {
+        // Set GPIO3 to low (LED OFF)
+        gpio_set_level(GPIO_OUTPUT_PIN_LED, 1);
+        ESP_LOGI(TAG, "LED is OFF");
+    }
+}
+
+
+
+void compute_servo_angle(int x, int y, int *servo_angle_x, int *servo_angle_y, float depth) {
+    // Error in x and y
+    int error_x = x - DESIRED_X ;
+    int error_y = y - DESIRED_Y ;
+
+    // Simplified interaction matrix (assuming depth is constant)
+    float L[2][2] = {
+        {-1.0f / depth, 0},
+        {0, -1.0f / depth}
+    };
+
+    // Compute control signals (proportional control)
+    *servo_angle_x = Kp * (L[0][0] * error_x + L[0][1] * error_y);
+    *servo_angle_y = Kp * (L[1][0] * error_x + L[1][1] * error_y);
+
+    // Ensure angles are within servo limits (-90 to 90 degrees)
+    *servo_angle_x = fmax(fmin(*servo_angle_x, 90), -90);
+    *servo_angle_y = fmax(fmin(*servo_angle_y, 90), -90);
+}
+
+extern "C" void app_main()
+{
+    int servo_angle_x, servo_angle_y;
+    float depth = 1.0f; // Assume a constant depth for simplicity
+    
+    app_wifi_main();
+
+    xQueueAIFrame = xQueueCreate(2, sizeof(camera_fb_t *));
+    xQueueHttpFrame = xQueueCreate(2, sizeof(camera_fb_t *));
+    xQueueResizedFrame = xQueueCreate(2, sizeof(camera_fb_t *));
+    xQueueResult = xQueueCreate(2, sizeof(bool));
+    xQueueAngleX = xQueueCreate(2, sizeof(int));
+    xQueueAngleY = xQueueCreate(2, sizeof(int));
+
+
+    // xQueueFaceFrame = xQueueCreate(2, sizeof(camera_fb_t *));
+
+    // register_camera(PIXFORMAT_RGB565, FRAMESIZE_240X240, 2, xQueueAIFrame, xQueueResizedFrame);
+    // //register_human_mouth_detection
+
+    // //mdns
+    // app_mdns_main();
+
+    // // register_human_face_detection(xQueueAIFrame, NULL, NULL, NULL, true);
+    // register_human_face_detection(xQueueAIFrame, NULL, xQueueResult, xQueueHttpFrame, false);
+    // register_httpd(xQueueResizedFrame, NULL, true);
+    
+    // // Initialize the servo driver
+    register_servo_driver();
+    ESP_LOGI("APP_MAIN", "Servo driver initialized successfully");
+    
+    
+
+    // Log the initial state
+    ESP_LOGI(TAG, "Initial LED state set");
+
+
+    while (1) {
+        compute_servo_angle(mouth_position.first, mouth_position.second, &servo_angle_x, &servo_angle_y, depth);    
+
+        printf("Mouth Position: (%d, %d)\n", mouth_position.first, mouth_position.second);
+        printf("Servo Angle: (%d, %d)\n", servo_angle_x, servo_angle_y);
+        int pixel_X = -30;
+        int pixel_Y = -30;
+        pixel_X ++;
+        pixel_Y ++;
+        // xQueueSend(xQueueAngleX, &pixel_X, portMAX_DELAY);
+        // xQueueSend(xQueueAngleY, &pixel_Y, portMAX_DELAY);
+        servo_angle_x = 10;
+        servo_angle_y = -10;
+        servo_angle_y ++;
+        servo_angle_x ++;
+        usleep(100000);
+        bool detected = false;
+        if (xQueueReceive(xQueueResult, &detected, portMAX_DELAY))
+        {
+            control_leds(detected);
+        }
+    }
+}
